@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+package pomai.queue.v1;
+
+message MessageId {
+  uint64 high = 1;
+  uint64 low = 2;
+}
+
+message Message {
+  MessageId id = 1;
+  uint64 enqueue_ts = 2;
+  bytes payload = 3;
+  map<string, string> headers = 4;
+  string routing_key = 5;
+}
+
+message CreateQueueRequest { string queue_name = 1; }
+message CreateQueueResponse {}
+
+message ProduceRequest {
+  string queue_name = 1;
+  Message message = 2;
+}
+message ProduceResponse { uint64 offset = 1; }
+
+message ConsumeRequest {
+  string queue_name = 1;
+  string group_id = 2;
+}
+message ConsumeResponse {
+  uint64 offset = 1;
+  Message message = 2;
+}
+
+message AckRequest {
+  string queue_name = 1;
+  string group_id = 2;
+  MessageId id = 3;
+}
+message AckResponse {}
+
+message NackRequest {
+  string queue_name = 1;
+  string group_id = 2;
+  MessageId id = 3;
+  bool requeue = 4;
+}
+message NackResponse {}
+
+service PomaiQueueService {
+  rpc CreateQueue(CreateQueueRequest) returns (CreateQueueResponse);
+  rpc Produce(ProduceRequest) returns (ProduceResponse);
+  rpc Consume(ConsumeRequest) returns (stream ConsumeResponse);
+  rpc Ack(AckRequest) returns (AckResponse);
+  rpc Nack(NackRequest) returns (NackResponse);
+}
