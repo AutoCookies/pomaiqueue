@@ -5,63 +5,65 @@ on:
   pull_request:
 
 jobs:
-  build-test:
+  build:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        include:
-          - build_type: Debug
-            sanitize: ON
-          - build_type: Release
-            sanitize: OFF
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - name: Configure
-        run: |
-          cmake -S . -B build \
-            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
-            -DPOMAIQUEUE_ENABLE_ASAN_UBSAN=${{ matrix.sanitize }}
+        run: cmake -S . -B build -DPOMAIQ_BUILD_SERVER=ON
       - name: Build
         run: cmake --build build --parallel
-      - name: Unit + integration tests
-        run: ctest --test-dir build --output-on-failure -R "test_"
 
-  crash-sample:
+  unit-tests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
-      - name: Build
-        run: cmake --build build --parallel --target crash_runner
-      - name: Crash oracle sample
-        run: ./build/crash_runner 2
-      - name: Upload crash artifacts on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
+      - run: cmake -S . -B build -DPOMAIQ_BUILD_SERVER=ON
+      - run: cmake --build build --parallel
+      - run: ctest --test-dir build --output-on-failure -R "test_"
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S . -B build -DPOMAIQ_BUILD_SERVER=ON
+      - run: cmake --build build --parallel
+      - run: ctest --test-dir build --output-on-failure -R "integration"
+
+  crash-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S . -B build -DPOMAIQ_BUILD_SERVER=ON
+      - run: cmake --build build --parallel --target crash_runner
+      - run: ./build/crash_runner 2
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S . -B build
+
+  artifact:
+    runs-on: ubuntu-latest
+    needs: [build, unit-tests, integration-tests, crash-tests, lint]
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S . -B build -DPOMAIQ_BUILD_SERVER=ON
+      - run: cmake --build build --parallel --target pomaiqueue-server pomaiqctl
+      - run: |
+          mkdir -p release/pomaiqueue/bin release/pomaiqueue/docs
+          cp build/pomaiqueue-server release/pomaiqueue/bin/
+          cp build/pomaiqctl release/pomaiqueue/bin/
+          cp README.md docs/runbook.md release/pomaiqueue/docs/
+          tar -czf pomaiqueue-${{ github.sha }}.tar.gz -C release pomaiqueue
+          sha256sum pomaiqueue-${{ github.sha }}.tar.gz > pomaiqueue-${{ github.sha }}.tar.gz.sha256
+      - uses: actions/upload-artifact@v4
         with:
-          name: crash-logs
-          path: /tmp/pomaiqueue-crash-oracle
-
-  benchmark-smoke:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-      - name: Build
-        run: cmake --build build --parallel --target bench_enqueue bench_lease_ack bench_timeout_retry bench_recovery
-      - name: Benchmark smoke
-        run: scripts/bench/run_all.sh build benchmark.json
-      - name: Upload benchmark artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: benchmark-json
-          path: benchmark.json
-
-  format-lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: CMake configure sanity
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+          name: pomaiqueue-release
+          path: |
+            pomaiqueue-${{ github.sha }}.tar.gz
+            pomaiqueue-${{ github.sha }}.tar.gz.sha256

@@ -1,5 +1,7 @@
 #include "src/core/engine/queue_engine.h"
 
+#include "src/core/durable_io.h"
+
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
@@ -501,8 +503,7 @@ util::Status QueueEngine::PersistGroupState(const std::string& queue_name,
   if (util::FailpointActive("before_checkpoint_rename")) {
     return util::Status(util::StatusCode::kIOError, "failpoint before_checkpoint_rename");
   }
-  std::filesystem::rename(tmp, path);
-  return util::Status::Ok();
+  return core::DurableRename(tmp, path, options_.fsync_policy);
 }
 
 util::Status QueueEngine::AppendTransition(const std::string& queue_name,

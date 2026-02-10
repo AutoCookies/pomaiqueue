@@ -1,0 +1,14 @@
+# PomaiQueue server runtime config (P0 baseline)
+data_dir = "/tmp/pomaiqueue"
+shard_count = 1
+max_inflight = 100
+max_queue_depth = 10000
+max_retry_count = 5
+max_segment_size_bytes = 67108864
+visibility_timeout = "30s"
+retry_backoff = "1s"
+scheduler_tick = "100ms"
+retention = "24h"
+fsync_policy = "always"
+bootstrap_queues = ["jobs", "dead_jobs"]
+shutdown_grace = "5s"
