@@ -4,6 +4,8 @@
 #include <filesystem>
 #include <fstream>
 
+#include "src/core/util/failpoint.h"
+
 namespace pomai::queue::engine {
 
 namespace {
@@ -496,6 +498,9 @@ util::Status QueueEngine::PersistGroupState(const std::string& queue_name,
     }
   }
 
+  if (util::FailpointActive("before_checkpoint_rename")) {
+    return util::Status(util::StatusCode::kIOError, "failpoint before_checkpoint_rename");
+  }
   std::filesystem::rename(tmp, path);
   return util::Status::Ok();
 }
@@ -506,6 +511,9 @@ util::Status QueueEngine::AppendTransition(const std::string& queue_name,
                                            const TransitionEvent& event) {
   auto path = GroupEventPath(options_.data_dir, queue_name, group_id);
   std::filesystem::create_directories(path.parent_path());
+  if (util::FailpointActive("before_log_append")) {
+    return util::Status(util::StatusCode::kIOError, "failpoint before_log_append");
+  }
   std::ofstream out(path, std::ios::binary | std::ios::app);
   if (!out.is_open()) {
     return util::Status(util::StatusCode::kIOError, "open event log failed");
@@ -529,6 +537,10 @@ util::Status QueueEngine::AppendTransition(const std::string& queue_name,
   out.write(event.owner.data(), static_cast<std::streamsize>(owner_size));
   out.write(reinterpret_cast<const char*>(&token_size), sizeof(token_size));
   out.write(event.lease_token.data(), static_cast<std::streamsize>(token_size));
+
+  if (util::FailpointActive("after_log_append")) {
+    return util::Status(util::StatusCode::kIOError, "failpoint after_log_append");
+  }
 
   out.flush();
   if (!out) {
@@ -587,6 +599,9 @@ void QueueEngine::ReapExpiredInflight(const std::string& queue_name,
         event.state = MessageState::kReady;
         event.available_after_ms = now + options_.retry_backoff.count();
         event.reason = TransitionReason::kVisibilityTimeoutRequeued;
+      }
+      if (util::FailpointActive("before_timeout_transition")) {
+        continue;
       }
       auto append = AppendTransition(queue_name, group_id, group, event);
       if (!append.ok()) {
@@ -723,6 +738,9 @@ util::StatusOr<std::optional<ConsumeResult>> QueueEngine::ConsumeOnShard(const s
   event.owner = group_id;
   event.lease_token = std::to_string(id.high) + ":" + std::to_string(id.low) + ":" + std::to_string(event.sequence);
   event.reason = TransitionReason::kDelivered;
+  if (util::FailpointActive("before_lease_issue")) {
+    return util::Status(util::StatusCode::kIOError, "failpoint before_lease_issue");
+  }
   auto append = AppendTransition(queue_name, group_id, *group, event);
   if (!append.ok()) {
     return append;
@@ -777,6 +795,9 @@ util::Status QueueEngine::AckOnShard(const std::string& queue_name,
   event.available_after_ms = 0;
   event.transition_ts = CurrentTimeMs();
   event.reason = TransitionReason::kAcked;
+  if (util::FailpointActive("before_ack_transition")) {
+    return util::Status(util::StatusCode::kIOError, "failpoint before_ack_transition");
+  }
   auto append = AppendTransition(queue_name, group_id, *group, event);
   if (!append.ok()) {
     return append;
@@ -833,6 +854,9 @@ util::Status QueueEngine::NackOnShard(const std::string& queue_name,
     }
   }
 
+  if (event.state == MessageState::kDead && util::FailpointActive("before_dlq_move")) {
+    return util::Status(util::StatusCode::kIOError, "failpoint before_dlq_move");
+  }
   auto append = AppendTransition(queue_name, group_id, *group, event);
   if (!append.ok()) {
     return append;

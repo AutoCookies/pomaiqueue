@@ -1,51 +1,30 @@
 # PomaiQueue
 
-Pomai Queue is a deterministic, bounded, crash-safe backend task queue with first-class replay debugging.
+![CI](https://github.com/example/pomaiqueue/actions/workflows/ci.yml/badge.svg)
 
-## Identity
-
-Pomai focuses on production trust:
-- deterministic pull consumption
-- append-only transition history per queue/group
-- bounded scheduler (time wheel)
-- explicit ACK/NACK and DLQ behavior
-- crash oracle regression tests
-
-It is intentionally **not** a Kafka/RabbitMQ clone.
+Pomai Queue is a deterministic, bounded, crash-safe backend task queue with replay debugging.
 
 ## Canonical contract
-
 Behavior source of truth is [`docs/QUEUE_CONTRACT.md`](docs/QUEUE_CONTRACT.md).
-Engine operational contract and invariants are in:
-- [`docs/ENGINE_CONTRACT.md`](docs/ENGINE_CONTRACT.md)
-- [`docs/INVARIANTS.md`](docs/INVARIANTS.md)
-- [`docs/FAILURE_MODES.md`](docs/FAILURE_MODES.md)
 
 ## Build and test
-
 ```bash
 cmake -S . -B build
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-## Replay and explain CLI
-
-```bash
-./build/pomaiqctl explain --data_dir /tmp/pomaiqueue --queue q --group g --id 42
-./build/pomaiqctl replay --data_dir /tmp/pomaiqueue --queue q --group g --until_seq 100
-```
+## How we prove safety
+- Contract + invariants: [`docs/QUEUE_CONTRACT.md`](docs/QUEUE_CONTRACT.md), [`docs/INVARIANTS.md`](docs/INVARIANTS.md)
+- Deterministic test pyramid: [`docs/TESTING.md`](docs/TESTING.md)
+- Crash oracle + failpoints: [`tests/crash/runner.cc`](tests/crash/runner.cc), [`docs/CRASH_TESTING.md`](docs/CRASH_TESTING.md)
 
 ## Benchmarks
-
 ```bash
-./build/bench_pomaiqueue > bench.json
+scripts/bench/run_all.sh build results.json
+scripts/bench/compare.py baseline.json results.json
 ```
+See [`docs/BENCHMARKING.md`](docs/BENCHMARKING.md) and [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
 
-Produces stable JSON for enqueue throughput by payload class.
-
-## Crash testing
-
-```bash
-./build/crash_runner
-```
+## Production-ready claim policy
+This project does **not** claim universally production-ready status. Readiness is defined and tracked in [`docs/READINESS_SCORECARD.md`](docs/READINESS_SCORECARD.md) with explicit scope and limitations.

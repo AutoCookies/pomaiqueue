@@ -23,6 +23,12 @@ A message for a given consumer group is in exactly one of:
 
 No dual-state membership is allowed.
 
+### Idempotency and lease rules
+- `Ack` is valid only for currently `IN_FLIGHT` messages.
+- Duplicate `Ack` for already ACKED/non-IN_FLIGHT messages returns `kNotFound` (treated as no-op by callers).
+- `Ack` after timeout requeue is rejected (`kNotFound`) because the previous lease is no longer valid.
+- Lease tokens are unique per delivery attempt and observable via `InspectMessage`.
+
 ### Persistence
 - Message payloads are persisted in an append-only segment log (`seg-000001.log`) with CRC64.
 - Group state is atomically snapshotted (`<group>.state`) and renamed.

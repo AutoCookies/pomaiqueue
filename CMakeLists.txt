@@ -24,6 +24,7 @@ add_library(pomaiqueue_core
   src/core/storage/record.cc
   src/core/storage/segment_log.cc
   src/core/util/crc64.cc
+  src/core/util/failpoint.cc
   src/core/util/fsync.cc
 )
 
@@ -32,6 +33,8 @@ target_include_directories(pomaiqueue_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 if (POMAIQUEUE_BUILD_CLI)
   add_executable(pomaiqctl src/cli/pomaiqctl.cc)
   target_link_libraries(pomaiqctl PRIVATE pomaiqueue_core)
+  add_executable(pomaiqueue_stress src/cli/pomaiqueue_stress.cc)
+  target_link_libraries(pomaiqueue_stress PRIVATE pomaiqueue_core)
 endif()
 
 if (POMAIQUEUE_BUILD_SERVER)
@@ -44,16 +47,34 @@ if (POMAIQUEUE_BUILD_TESTS)
   target_link_libraries(test_record PRIVATE pomaiqueue_core)
   add_test(NAME test_record COMMAND test_record)
 
+  add_executable(test_segment_log tests/unit/test_segment_log.cc)
+  target_link_libraries(test_segment_log PRIVATE pomaiqueue_core)
+  add_test(NAME test_segment_log COMMAND test_segment_log)
+
+  add_executable(test_checkpoint tests/unit/test_checkpoint.cc)
+  target_link_libraries(test_checkpoint PRIVATE pomaiqueue_core)
+  add_test(NAME test_checkpoint COMMAND test_checkpoint)
+
   add_executable(test_queue_engine tests/unit/test_queue_engine.cc)
   target_link_libraries(test_queue_engine PRIVATE pomaiqueue_core)
   add_test(NAME test_queue_engine COMMAND test_queue_engine)
 
+  add_executable(test_engine_integration tests/integration/test_engine_integration.cc)
+  target_link_libraries(test_engine_integration PRIVATE pomaiqueue_core)
+  add_test(NAME test_engine_integration COMMAND test_engine_integration)
+
   add_executable(crash_runner tests/crash/runner.cc)
   target_link_libraries(crash_runner PRIVATE pomaiqueue_core)
-  add_test(NAME crash_runner COMMAND crash_runner)
+  add_test(NAME crash_runner COMMAND crash_runner 2)
 endif()
 
 if (POMAIQUEUE_BUILD_BENCH)
-  add_executable(bench_pomaiqueue benchmarks/bench_pomaiqueue.cc)
-  target_link_libraries(bench_pomaiqueue PRIVATE pomaiqueue_core)
+  add_executable(bench_enqueue benchmarks/bench_enqueue.cc)
+  target_link_libraries(bench_enqueue PRIVATE pomaiqueue_core)
+  add_executable(bench_lease_ack benchmarks/bench_lease_ack.cc)
+  target_link_libraries(bench_lease_ack PRIVATE pomaiqueue_core)
+  add_executable(bench_timeout_retry benchmarks/bench_timeout_retry.cc)
+  target_link_libraries(bench_timeout_retry PRIVATE pomaiqueue_core)
+  add_executable(bench_recovery benchmarks/bench_recovery.cc)
+  target_link_libraries(bench_recovery PRIVATE pomaiqueue_core)
 endif()
