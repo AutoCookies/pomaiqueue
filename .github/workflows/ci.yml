@@ -1,0 +1,34 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        build_type: [Debug, Release]
+        sanitizer: [off, on]
+        exclude:
+          - build_type: Release
+            sanitizer: on
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DPOMAIQUEUE_ENABLE_ASAN_UBSAN=${{ matrix.sanitizer == 'on' && 'ON' || 'OFF' }}
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Benchmark smoke
+        run: ./build/bench_pomaiqueue > benchmark.json
+      - name: Upload benchmark artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-${{ matrix.build_type }}-${{ matrix.sanitizer }}
+          path: benchmark.json

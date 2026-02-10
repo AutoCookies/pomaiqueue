@@ -11,6 +11,7 @@ namespace pomai::queue::api {
 
 using EngineOptions = engine::EngineOptions;
 using ConsumeResult = engine::ConsumeResult;
+using ReplayResult = engine::ReplayResult;
 
 class PomaiQueue {
  public:
@@ -32,6 +33,9 @@ class PomaiQueue {
   util::StatusOr<engine::MessageDebugView> InspectMessage(const std::string& queue_name,
                                                           const std::string& group_id,
                                                           const model::MessageId& id);
+  util::StatusOr<ReplayResult> ReplayToSequence(const std::string& queue_name,
+                                                const std::string& group_id,
+                                                uint64_t until_sequence);
 
  private:
   engine::QueueEngine engine_;

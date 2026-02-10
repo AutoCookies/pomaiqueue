@@ -40,9 +40,21 @@ MessageState DecodeState(uint32_t state) {
   }
 }
 
+uint32_t EncodeReason(TransitionReason reason) {
+  return static_cast<uint32_t>(reason);
+}
+
+TransitionReason DecodeReason(uint32_t code) {
+  return static_cast<TransitionReason>(code);
+}
+
 }  // namespace
 
-QueueEngine::QueueEngine(EngineOptions options) : options_(std::move(options)) {}
+QueueEngine::QueueEngine(EngineOptions options) : options_(std::move(options)) {
+  if (!options_.now_fn) {
+    options_.now_fn = []() { return QueueEngine::NowMs(); };
+  }
+}
 
 QueueEngine::~QueueEngine() {
   Stop();
@@ -53,13 +65,26 @@ uint64_t QueueEngine::NowMs() {
       std::chrono::system_clock::now().time_since_epoch()).count());
 }
 
+uint64_t QueueEngine::CurrentTimeMs() const {
+  return options_.now_fn();
+}
+
 std::filesystem::path QueueEngine::GroupStatePath(const std::string& data_dir,
                                                   const std::string& queue_name,
                                                   const std::string& group_id) {
   return std::filesystem::path(data_dir) / queue_name / (group_id + ".state");
 }
 
+std::filesystem::path QueueEngine::GroupEventPath(const std::string& data_dir,
+                                                  const std::string& queue_name,
+                                                  const std::string& group_id) {
+  return std::filesystem::path(data_dir) / queue_name / (group_id + ".events");
+}
+
 util::Status QueueEngine::Start() {
+  if (options_.shard_count == 0) {
+    return util::Status(util::StatusCode::kInvalidArgument, "shard_count must be >= 1");
+  }
   shards_.clear();
   shards_.reserve(options_.shard_count);
   for (uint32_t i = 0; i < options_.shard_count; ++i) {
@@ -78,16 +103,34 @@ util::Status QueueEngine::Stop() {
   return util::Status::Ok();
 }
 
+util::Status QueueEngine::ValidateShardConfig() const {
+  if (options_.shard_count == 0) {
+    return util::Status(util::StatusCode::kInvalidArgument, "shard_count must be >= 1");
+  }
+  if (shards_.empty()) {
+    return util::Status(util::StatusCode::kUnavailable, "engine not started");
+  }
+  return util::Status::Ok();
+}
+
 size_t QueueEngine::ShardForQueue(const std::string& queue_name) const {
   return std::hash<std::string>{}(queue_name) % options_.shard_count;
 }
 
 util::Status QueueEngine::CreateQueue(const std::string& queue_name) {
+  auto valid = ValidateShardConfig();
+  if (!valid.ok()) {
+    return valid;
+  }
   auto shard_id = ShardForQueue(queue_name);
   return shards_[shard_id]->Submit([this, queue_name]() { return CreateQueueOnShard(queue_name); });
 }
 
 util::StatusOr<uint64_t> QueueEngine::Produce(const std::string& queue_name, const model::Message& message) {
+  auto valid = ValidateShardConfig();
+  if (!valid.ok()) {
+    return valid;
+  }
   auto shard_id = ShardForQueue(queue_name);
   return shards_[shard_id]->SubmitValue<uint64_t>(
       [this, queue_name, message]() { return ProduceOnShard(queue_name, message); });
@@ -95,6 +138,10 @@ util::StatusOr<uint64_t> QueueEngine::Produce(const std::string& queue_name, con
 
 util::StatusOr<std::optional<ConsumeResult>> QueueEngine::Consume(const std::string& queue_name,
                                                                   const std::string& group_id) {
+  auto valid = ValidateShardConfig();
+  if (!valid.ok()) {
+    return valid;
+  }
   auto shard_id = ShardForQueue(queue_name);
   return shards_[shard_id]->SubmitValue<std::optional<ConsumeResult>>(
       [this, queue_name, group_id]() { return ConsumeOnShard(queue_name, group_id); });
@@ -103,6 +150,10 @@ util::StatusOr<std::optional<ConsumeResult>> QueueEngine::Consume(const std::str
 util::Status QueueEngine::Ack(const std::string& queue_name,
                               const std::string& group_id,
                               const model::MessageId& id) {
+  auto valid = ValidateShardConfig();
+  if (!valid.ok()) {
+    return valid;
+  }
   auto shard_id = ShardForQueue(queue_name);
   return shards_[shard_id]->Submit([this, queue_name, group_id, id]() { return AckOnShard(queue_name, group_id, id); });
 }
@@ -111,12 +162,20 @@ util::Status QueueEngine::Nack(const std::string& queue_name,
                                const std::string& group_id,
                                const model::MessageId& id,
                                bool requeue) {
+  auto valid = ValidateShardConfig();
+  if (!valid.ok()) {
+    return valid;
+  }
   auto shard_id = ShardForQueue(queue_name);
   return shards_[shard_id]->Submit(
       [this, queue_name, group_id, id, requeue]() { return NackOnShard(queue_name, group_id, id, requeue); });
 }
 
 util::StatusOr<QueueStats> QueueEngine::GetStats(const std::string& queue_name, const std::string& group_id) {
+  auto valid = ValidateShardConfig();
+  if (!valid.ok()) {
+    return valid;
+  }
   auto shard_id = ShardForQueue(queue_name);
   return shards_[shard_id]->SubmitValue<QueueStats>(
       [this, queue_name, group_id]() { return GetStatsOnShard(queue_name, group_id); });
@@ -125,9 +184,27 @@ util::StatusOr<QueueStats> QueueEngine::GetStats(const std::string& queue_name, 
 util::StatusOr<MessageDebugView> QueueEngine::InspectMessage(const std::string& queue_name,
                                                              const std::string& group_id,
                                                              const model::MessageId& id) {
+  auto valid = ValidateShardConfig();
+  if (!valid.ok()) {
+    return valid;
+  }
   auto shard_id = ShardForQueue(queue_name);
   return shards_[shard_id]->SubmitValue<MessageDebugView>(
       [this, queue_name, group_id, id]() { return InspectMessageOnShard(queue_name, group_id, id); });
+}
+
+util::StatusOr<ReplayResult> QueueEngine::ReplayToSequence(const std::string& queue_name,
+                                                           const std::string& group_id,
+                                                           uint64_t until_sequence) {
+  auto valid = ValidateShardConfig();
+  if (!valid.ok()) {
+    return valid;
+  }
+  auto shard_id = ShardForQueue(queue_name);
+  return shards_[shard_id]->SubmitValue<ReplayResult>(
+      [this, queue_name, group_id, until_sequence]() {
+        return ReplayToSequenceOnShard(queue_name, group_id, until_sequence);
+      });
 }
 
 util::StatusOr<QueueEngine::QueueState*> QueueEngine::GetQueue(const std::string& queue_name) {
@@ -139,10 +216,132 @@ util::StatusOr<QueueEngine::QueueState*> QueueEngine::GetQueue(const std::string
   return it->second.get();
 }
 
+void QueueEngine::InitScheduler(ConsumerGroupState& group) {
+  const uint64_t tick_ms = std::max<uint64_t>(1, options_.scheduler_tick.count());
+  group.deadline_wheel.assign(512, {});
+  group.wheel_base_tick = CurrentTimeMs() / tick_ms;
+}
+
+void QueueEngine::ScheduleInflight(ConsumerGroupState& group,
+                                   const model::MessageId& id,
+                                   uint64_t deadline_ms,
+                                   const std::string& owner,
+                                   const std::string& lease_token,
+                                   uint64_t offset) {
+  const uint64_t tick_ms = std::max<uint64_t>(1, options_.scheduler_tick.count());
+  if (group.deadline_wheel.empty()) {
+    InitScheduler(group);
+  }
+  const uint64_t tick = deadline_ms / tick_ms;
+  const size_t slot = tick % group.deadline_wheel.size();
+  group.deadline_wheel[slot].push_back(id);
+
+  InflightEntry entry;
+  entry.offset = offset;
+  entry.deadline_ms = deadline_ms;
+  entry.bucket_tick = tick;
+  entry.owner = owner;
+  entry.lease_token = lease_token;
+  group.inflight[id] = std::move(entry);
+}
+
+std::string QueueEngine::ReasonToString(TransitionReason reason) {
+  switch (reason) {
+    case TransitionReason::kProduced:
+      return "produced";
+    case TransitionReason::kDelivered:
+      return "delivered-to-consumer";
+    case TransitionReason::kAcked:
+      return "acked-by-consumer";
+    case TransitionReason::kConsumerNackRequeued:
+      return "consumer-nack-requeued";
+    case TransitionReason::kConsumerNackDead:
+      return "consumer-nack-dead-lettered";
+    case TransitionReason::kVisibilityTimeoutRequeued:
+      return "visibility-timeout-requeued";
+    case TransitionReason::kVisibilityTimeoutDead:
+      return "visibility-timeout-retry-exhausted";
+    case TransitionReason::kRecoveredInflightToReady:
+      return "recovered-inflight-to-ready";
+  }
+  return "unknown";
+}
+
+util::StatusOr<std::vector<QueueEngine::TransitionEvent>> QueueEngine::LoadTransitions(
+    const std::string& queue_name,
+    const std::string& group_id,
+    uint64_t max_sequence) {
+  std::vector<TransitionEvent> events;
+  auto path = GroupEventPath(options_.data_dir, queue_name, group_id);
+  if (!std::filesystem::exists(path)) {
+    return events;
+  }
+
+  std::ifstream in(path, std::ios::binary);
+  if (!in.is_open()) {
+    return util::Status(util::StatusCode::kIOError, "open events failed");
+  }
+
+  while (in) {
+    TransitionEvent event;
+    uint32_t state = 0;
+    uint32_t reason = 0;
+    uint64_t owner_size = 0;
+    uint64_t token_size = 0;
+    in.read(reinterpret_cast<char*>(&event.sequence), sizeof(event.sequence));
+    if (in.eof()) {
+      break;
+    }
+    in.read(reinterpret_cast<char*>(&event.id.high), sizeof(event.id.high));
+    in.read(reinterpret_cast<char*>(&event.id.low), sizeof(event.id.low));
+    in.read(reinterpret_cast<char*>(&state), sizeof(state));
+    in.read(reinterpret_cast<char*>(&event.retry_count), sizeof(event.retry_count));
+    in.read(reinterpret_cast<char*>(&event.available_after_ms), sizeof(event.available_after_ms));
+    in.read(reinterpret_cast<char*>(&event.transition_ts), sizeof(event.transition_ts));
+    in.read(reinterpret_cast<char*>(&event.deadline_ms), sizeof(event.deadline_ms));
+    in.read(reinterpret_cast<char*>(&reason), sizeof(reason));
+    in.read(reinterpret_cast<char*>(&owner_size), sizeof(owner_size));
+    event.owner.resize(owner_size);
+    in.read(event.owner.data(), static_cast<std::streamsize>(owner_size));
+    in.read(reinterpret_cast<char*>(&token_size), sizeof(token_size));
+    event.lease_token.resize(token_size);
+    in.read(event.lease_token.data(), static_cast<std::streamsize>(token_size));
+    if (!in) {
+      return util::Status(util::StatusCode::kCorruption, "events corrupted");
+    }
+    event.state = DecodeState(state);
+    event.reason = DecodeReason(reason);
+    if (event.sequence <= max_sequence) {
+      events.push_back(std::move(event));
+    }
+  }
+
+  return events;
+}
+
+void QueueEngine::ApplyTransition(ConsumerGroupState& group, const TransitionEvent& event) {
+  auto it = group.runtime.find(event.id);
+  if (it == group.runtime.end()) {
+    return;
+  }
+  it->second.state = event.state;
+  it->second.retry_count = event.retry_count;
+  it->second.available_after_ms = event.available_after_ms;
+  it->second.last_transition_ts = event.transition_ts;
+  it->second.sequence = event.sequence;
+  it->second.last_transition_reason = ReasonToString(event.reason);
+
+  group.inflight.erase(event.id);
+  if (event.state == MessageState::kInFlight) {
+    ScheduleInflight(group, event.id, event.deadline_ms, event.owner, event.lease_token, it->second.offset);
+  }
+}
+
 util::Status QueueEngine::LoadGroupState(const std::string& queue_name,
-                                        const std::string& group_id,
-                                        QueueState& queue_state,
-                                        ConsumerGroupState& group) {
+                                         const std::string& group_id,
+                                         QueueState& queue_state,
+                                         ConsumerGroupState& group) {
+  InitScheduler(group);
   auto offsets = queue_state.segment.Offsets();
   std::unordered_map<uint64_t, model::Message> offset_to_message;
   for (uint64_t offset : offsets) {
@@ -157,67 +356,82 @@ util::Status QueueEngine::LoadGroupState(const std::string& queue_name,
     offset_to_message[offset] = msg;
   }
 
-  auto cp_or = group.checkpoint_store.Load();
-  if (!cp_or.ok()) {
-    return cp_or.status();
+  for (const auto& [offset, msg] : offset_to_message) {
+    MessageRuntime runtime;
+    runtime.state = MessageState::kReady;
+    runtime.offset = offset;
+    runtime.enqueue_ts = msg.enqueue_ts;
+    runtime.last_transition_ts = msg.enqueue_ts;
+    runtime.last_transition_reason = "recovered-default-ready";
+    group.runtime[msg.id] = runtime;
   }
+
   auto state_path = GroupStatePath(options_.data_dir, queue_name, group_id);
-  if (!std::filesystem::exists(state_path)) {
-    for (uint64_t offset : offsets) {
-      auto& msg = offset_to_message[offset];
-      MessageRuntime runtime;
-      runtime.state = MessageState::kReady;
-      runtime.offset = offset;
-      runtime.enqueue_ts = msg.enqueue_ts;
-      runtime.last_transition_reason = "recovered-default-ready";
-      group.runtime[msg.id] = runtime;
+  if (std::filesystem::exists(state_path)) {
+    std::ifstream in(state_path, std::ios::binary);
+    if (!in.is_open()) {
+      return util::Status(util::StatusCode::kIOError, "open group state failed");
     }
-    BuildReadyQueue(group);
-    return util::Status::Ok();
-  }
 
-  std::ifstream in(state_path, std::ios::binary);
-  if (!in.is_open()) {
-    return util::Status(util::StatusCode::kIOError, "open group state failed");
-  }
-
-  uint64_t count = 0;
-  in.read(reinterpret_cast<char*>(&count), sizeof(count));
-  for (uint64_t i = 0; i < count; ++i) {
-    PersistedMessage item;
-    uint64_t reason_size = 0;
-    in.read(reinterpret_cast<char*>(&item.id_high), sizeof(item.id_high));
-    in.read(reinterpret_cast<char*>(&item.id_low), sizeof(item.id_low));
-    in.read(reinterpret_cast<char*>(&item.offset), sizeof(item.offset));
-    in.read(reinterpret_cast<char*>(&item.state), sizeof(item.state));
-    in.read(reinterpret_cast<char*>(&item.retry_count), sizeof(item.retry_count));
-    in.read(reinterpret_cast<char*>(&item.enqueue_ts), sizeof(item.enqueue_ts));
-    in.read(reinterpret_cast<char*>(&item.available_after_ms), sizeof(item.available_after_ms));
-    in.read(reinterpret_cast<char*>(&reason_size), sizeof(reason_size));
-    item.reason.resize(reason_size);
-    in.read(item.reason.data(), static_cast<std::streamsize>(reason_size));
+    uint64_t count = 0;
+    in.read(reinterpret_cast<char*>(&count), sizeof(count));
+    in.read(reinterpret_cast<char*>(&group.next_sequence), sizeof(group.next_sequence));
     if (!in) {
       return util::Status(util::StatusCode::kCorruption, "group state corrupted");
     }
+    for (uint64_t i = 0; i < count; ++i) {
+      PersistedMessage item;
+      uint64_t reason_size = 0;
+      in.read(reinterpret_cast<char*>(&item.id_high), sizeof(item.id_high));
+      in.read(reinterpret_cast<char*>(&item.id_low), sizeof(item.id_low));
+      in.read(reinterpret_cast<char*>(&item.offset), sizeof(item.offset));
+      in.read(reinterpret_cast<char*>(&item.state), sizeof(item.state));
+      in.read(reinterpret_cast<char*>(&item.retry_count), sizeof(item.retry_count));
+      in.read(reinterpret_cast<char*>(&item.enqueue_ts), sizeof(item.enqueue_ts));
+      in.read(reinterpret_cast<char*>(&item.last_transition_ts), sizeof(item.last_transition_ts));
+      in.read(reinterpret_cast<char*>(&item.available_after_ms), sizeof(item.available_after_ms));
+      in.read(reinterpret_cast<char*>(&item.sequence), sizeof(item.sequence));
+      in.read(reinterpret_cast<char*>(&reason_size), sizeof(reason_size));
+      item.reason.resize(reason_size);
+      in.read(item.reason.data(), static_cast<std::streamsize>(reason_size));
+      if (!in) {
+        return util::Status(util::StatusCode::kCorruption, "group state corrupted");
+      }
 
-    model::MessageId id{item.id_high, item.id_low};
-    MessageRuntime runtime;
-    runtime.state = DecodeState(item.state);
-    runtime.offset = item.offset;
-    runtime.retry_count = item.retry_count;
-    runtime.enqueue_ts = item.enqueue_ts;
-    runtime.available_after_ms = item.available_after_ms;
-    runtime.last_transition_reason = std::move(item.reason);
-    group.runtime[id] = std::move(runtime);
+      model::MessageId id{item.id_high, item.id_low};
+      auto rt = group.runtime.find(id);
+      if (rt == group.runtime.end()) {
+        continue;
+      }
+      rt->second.state = DecodeState(item.state);
+      rt->second.offset = item.offset;
+      rt->second.retry_count = item.retry_count;
+      rt->second.enqueue_ts = item.enqueue_ts;
+      rt->second.last_transition_ts = item.last_transition_ts;
+      rt->second.available_after_ms = item.available_after_ms;
+      rt->second.sequence = item.sequence;
+      rt->second.last_transition_reason = std::move(item.reason);
+    }
   }
 
-  // Clear dangling offsets and ensure every persisted message maps to an existing log message.
-  for (auto it = group.runtime.begin(); it != group.runtime.end();) {
-    if (offset_to_message.find(it->second.offset) == offset_to_message.end()) {
-      it = group.runtime.erase(it);
-      continue;
+  auto events_or = LoadTransitions(queue_name, group_id, UINT64_MAX);
+  if (!events_or.ok()) {
+    return events_or.status();
+  }
+  for (const auto& event : events_or.value()) {
+    ApplyTransition(group, event);
+    group.next_sequence = std::max(group.next_sequence, event.sequence + 1);
+  }
+
+  const uint64_t now = CurrentTimeMs();
+  for (auto& [id, rt] : group.runtime) {
+    if (rt.state == MessageState::kInFlight) {
+      rt.state = MessageState::kReady;
+      rt.available_after_ms = now;
+      rt.last_transition_reason = ReasonToString(TransitionReason::kRecoveredInflightToReady);
+      rt.last_transition_ts = now;
     }
-    ++it;
+    (void)id;
   }
 
   BuildReadyQueue(group);
@@ -226,18 +440,12 @@ util::Status QueueEngine::LoadGroupState(const std::string& queue_name,
 
 void QueueEngine::BuildReadyQueue(ConsumerGroupState& group) {
   group.ready_offsets.clear();
-  group.inflight.clear();
-  const uint64_t now = NowMs();
+  const uint64_t now = CurrentTimeMs();
   for (auto& [id, runtime] : group.runtime) {
     if (runtime.state == MessageState::kReady && runtime.available_after_ms <= now) {
       group.ready_offsets.push_back(runtime.offset);
     }
-    if (runtime.state == MessageState::kInFlight) {
-      runtime.state = MessageState::kReady;
-      runtime.last_transition_reason = "recovered-inflight-to-ready";
-      runtime.available_after_ms = now;
-      group.ready_offsets.push_back(runtime.offset);
-    }
+    (void)id;
   }
   std::sort(group.ready_offsets.begin(), group.ready_offsets.end());
 }
@@ -258,6 +466,7 @@ util::Status QueueEngine::PersistGroupState(const std::string& queue_name,
 
     uint64_t count = group.runtime.size();
     out.write(reinterpret_cast<const char*>(&count), sizeof(count));
+    out.write(reinterpret_cast<const char*>(&group.next_sequence), sizeof(group.next_sequence));
     for (const auto& [id, runtime] : group.runtime) {
       uint64_t reason_size = runtime.last_transition_reason.size();
       uint64_t id_high = id.high;
@@ -266,14 +475,18 @@ util::Status QueueEngine::PersistGroupState(const std::string& queue_name,
       uint32_t state = EncodeState(runtime.state);
       uint32_t retry = runtime.retry_count;
       uint64_t enqueue_ts = runtime.enqueue_ts;
+      uint64_t last_transition_ts = runtime.last_transition_ts;
       uint64_t available_after = runtime.available_after_ms;
+      uint64_t sequence = runtime.sequence;
       out.write(reinterpret_cast<const char*>(&id_high), sizeof(id_high));
       out.write(reinterpret_cast<const char*>(&id_low), sizeof(id_low));
       out.write(reinterpret_cast<const char*>(&offset), sizeof(offset));
       out.write(reinterpret_cast<const char*>(&state), sizeof(state));
       out.write(reinterpret_cast<const char*>(&retry), sizeof(retry));
       out.write(reinterpret_cast<const char*>(&enqueue_ts), sizeof(enqueue_ts));
+      out.write(reinterpret_cast<const char*>(&last_transition_ts), sizeof(last_transition_ts));
       out.write(reinterpret_cast<const char*>(&available_after), sizeof(available_after));
+      out.write(reinterpret_cast<const char*>(&sequence), sizeof(sequence));
       out.write(reinterpret_cast<const char*>(&reason_size), sizeof(reason_size));
       out.write(runtime.last_transition_reason.data(), static_cast<std::streamsize>(reason_size));
     }
@@ -287,51 +500,116 @@ util::Status QueueEngine::PersistGroupState(const std::string& queue_name,
   return util::Status::Ok();
 }
 
-void QueueEngine::ReapExpiredInflight(ConsumerGroupState& group) {
-  const uint64_t now = NowMs();
-  std::vector<model::MessageId> expired;
-  for (const auto& [id, inflight] : group.inflight) {
-    if (inflight.deadline_ms <= now) {
-      expired.push_back(id);
-    }
+util::Status QueueEngine::AppendTransition(const std::string& queue_name,
+                                           const std::string& group_id,
+                                           ConsumerGroupState& group,
+                                           const TransitionEvent& event) {
+  auto path = GroupEventPath(options_.data_dir, queue_name, group_id);
+  std::filesystem::create_directories(path.parent_path());
+  std::ofstream out(path, std::ios::binary | std::ios::app);
+  if (!out.is_open()) {
+    return util::Status(util::StatusCode::kIOError, "open event log failed");
   }
 
-  for (const auto& id : expired) {
-    auto inflight_it = group.inflight.find(id);
-    if (inflight_it == group.inflight.end()) {
-      continue;
-    }
-    auto rt = group.runtime.find(id);
-    if (rt == group.runtime.end()) {
-      group.inflight.erase(inflight_it);
-      continue;
+  const uint32_t state = EncodeState(event.state);
+  const uint32_t reason = EncodeReason(event.reason);
+  const uint64_t owner_size = event.owner.size();
+  const uint64_t token_size = event.lease_token.size();
+
+  out.write(reinterpret_cast<const char*>(&event.sequence), sizeof(event.sequence));
+  out.write(reinterpret_cast<const char*>(&event.id.high), sizeof(event.id.high));
+  out.write(reinterpret_cast<const char*>(&event.id.low), sizeof(event.id.low));
+  out.write(reinterpret_cast<const char*>(&state), sizeof(state));
+  out.write(reinterpret_cast<const char*>(&event.retry_count), sizeof(event.retry_count));
+  out.write(reinterpret_cast<const char*>(&event.available_after_ms), sizeof(event.available_after_ms));
+  out.write(reinterpret_cast<const char*>(&event.transition_ts), sizeof(event.transition_ts));
+  out.write(reinterpret_cast<const char*>(&event.deadline_ms), sizeof(event.deadline_ms));
+  out.write(reinterpret_cast<const char*>(&reason), sizeof(reason));
+  out.write(reinterpret_cast<const char*>(&owner_size), sizeof(owner_size));
+  out.write(event.owner.data(), static_cast<std::streamsize>(owner_size));
+  out.write(reinterpret_cast<const char*>(&token_size), sizeof(token_size));
+  out.write(event.lease_token.data(), static_cast<std::streamsize>(token_size));
+
+  out.flush();
+  if (!out) {
+    return util::Status(util::StatusCode::kIOError, "append event failed");
+  }
+
+  ApplyTransition(group, event);
+  return util::Status::Ok();
+}
+
+void QueueEngine::ReapExpiredInflight(const std::string& queue_name,
+                                     const std::string& group_id,
+                                     ConsumerGroupState& group) {
+  if (group.deadline_wheel.empty()) {
+    InitScheduler(group);
+  }
+
+  const uint64_t now = CurrentTimeMs();
+  const uint64_t tick_ms = std::max<uint64_t>(1, options_.scheduler_tick.count());
+  const uint64_t now_tick = now / tick_ms;
+
+  while (group.wheel_base_tick <= now_tick) {
+    const size_t slot = group.wheel_base_tick % group.deadline_wheel.size();
+    auto bucket = std::move(group.deadline_wheel[slot]);
+    group.deadline_wheel[slot].clear();
+
+    for (const auto& id : bucket) {
+      auto inflight_it = group.inflight.find(id);
+      if (inflight_it == group.inflight.end()) {
+        continue;
+      }
+      if (inflight_it->second.bucket_tick > group.wheel_base_tick) {
+        continue;
+      }
+      if (inflight_it->second.deadline_ms > now) {
+        const size_t re_slot = inflight_it->second.bucket_tick % group.deadline_wheel.size();
+        group.deadline_wheel[re_slot].push_back(id);
+        continue;
+      }
+
+      auto rt = group.runtime.find(id);
+      if (rt == group.runtime.end()) {
+        group.inflight.erase(inflight_it);
+        continue;
+      }
+
+      TransitionEvent event;
+      event.sequence = group.next_sequence++;
+      event.id = id;
+      event.retry_count = rt->second.retry_count + 1;
+      event.transition_ts = now;
+      if (event.retry_count > options_.max_retry_count) {
+        event.state = MessageState::kDead;
+        event.reason = TransitionReason::kVisibilityTimeoutDead;
+      } else {
+        event.state = MessageState::kReady;
+        event.available_after_ms = now + options_.retry_backoff.count();
+        event.reason = TransitionReason::kVisibilityTimeoutRequeued;
+      }
+      auto append = AppendTransition(queue_name, group_id, group, event);
+      if (!append.ok()) {
+        continue;
+      }
     }
 
-    rt->second.retry_count += 1;
-    if (rt->second.retry_count > options_.max_retry_count) {
-      rt->second.state = MessageState::kDead;
-      rt->second.last_transition_reason = "visibility-timeout-retry-exhausted";
-    } else {
-      rt->second.state = MessageState::kReady;
-      rt->second.available_after_ms = now + options_.retry_backoff.count();
-      rt->second.last_transition_reason = "visibility-timeout-requeued";
-    }
-    group.inflight.erase(inflight_it);
+    group.wheel_base_tick += 1;
   }
 
   BuildReadyQueue(group);
 }
 
 util::StatusOr<QueueEngine::ConsumerGroupState*> QueueEngine::GetGroup(const std::string& queue_name,
-                                                                       QueueState& queue_state,
-                                                                       const std::string& group_id) {
+                                                                        QueueState& queue_state,
+                                                                        const std::string& group_id) {
   auto it = queue_state.groups.find(group_id);
   if (it != queue_state.groups.end()) {
     return it->second.get();
   }
 
   auto checkpoint_path = std::filesystem::path(options_.data_dir) / queue_name /
-                        (group_id + ".checkpoint");
+                         (group_id + ".checkpoint");
   storage::CheckpointStore store(checkpoint_path, options_.fsync_policy);
   auto group = std::make_unique<ConsumerGroupState>(std::move(store));
   auto* group_ptr = group.get();
@@ -401,7 +679,7 @@ util::StatusOr<std::optional<ConsumeResult>> QueueEngine::ConsumeOnShard(const s
   }
   auto* group = group_or.value();
 
-  ReapExpiredInflight(*group);
+  ReapExpiredInflight(queue_name, group_id, *group);
 
   if (group->inflight.size() >= options_.max_inflight) {
     return std::optional<ConsumeResult>();
@@ -423,18 +701,32 @@ util::StatusOr<std::optional<ConsumeResult>> QueueEngine::ConsumeOnShard(const s
   model::MessageId id{record.header.msg_id_high, record.header.msg_id_low};
   auto runtime_it = group->runtime.find(id);
   if (runtime_it == group->runtime.end()) {
-    return util::Status(util::StatusCode::kCorruption, "runtime state missing");
+    MessageRuntime runtime;
+    runtime.state = MessageState::kReady;
+    runtime.offset = offset;
+    runtime.enqueue_ts = record.header.enqueue_ts;
+    runtime.last_transition_ts = CurrentTimeMs();
+    runtime.last_transition_reason = "runtime-created-on-consume";
+    group->runtime[id] = runtime;
+    runtime_it = group->runtime.find(id);
   }
 
-  const uint64_t now = NowMs();
-  runtime_it->second.state = MessageState::kInFlight;
-  runtime_it->second.last_transition_reason = "delivered-to-consumer";
-
-  InflightEntry entry;
-  entry.offset = offset;
-  entry.available_after_ms = now;
-  entry.deadline_ms = now + options_.visibility_timeout.count();
-  group->inflight[id] = entry;
+  const uint64_t now = CurrentTimeMs();
+  TransitionEvent event;
+  event.sequence = group->next_sequence++;
+  event.id = id;
+  event.state = MessageState::kInFlight;
+  event.retry_count = runtime_it->second.retry_count;
+  event.available_after_ms = now;
+  event.transition_ts = now;
+  event.deadline_ms = now + options_.visibility_timeout.count();
+  event.owner = group_id;
+  event.lease_token = std::to_string(id.high) + ":" + std::to_string(id.low) + ":" + std::to_string(event.sequence);
+  event.reason = TransitionReason::kDelivered;
+  auto append = AppendTransition(queue_name, group_id, *group, event);
+  if (!append.ok()) {
+    return append;
+  }
 
   ConsumeResult result;
   result.offset = offset;
@@ -477,9 +769,18 @@ util::Status QueueEngine::AckOnShard(const std::string& queue_name,
     return util::Status(util::StatusCode::kCorruption, "runtime missing");
   }
 
-  runtime_it->second.state = MessageState::kAcked;
-  runtime_it->second.last_transition_reason = "acked-by-consumer";
-  group->inflight.erase(it);
+  TransitionEvent event;
+  event.sequence = group->next_sequence++;
+  event.id = id;
+  event.state = MessageState::kAcked;
+  event.retry_count = runtime_it->second.retry_count;
+  event.available_after_ms = 0;
+  event.transition_ts = CurrentTimeMs();
+  event.reason = TransitionReason::kAcked;
+  auto append = AppendTransition(queue_name, group_id, *group, event);
+  if (!append.ok()) {
+    return append;
+  }
 
   auto persist = PersistGroupState(queue_name, group_id, *group);
   if (!persist.ok()) {
@@ -512,21 +813,29 @@ util::Status QueueEngine::NackOnShard(const std::string& queue_name,
     return util::Status(util::StatusCode::kCorruption, "runtime missing");
   }
 
+  TransitionEvent event;
+  event.sequence = group->next_sequence++;
+  event.id = id;
+  event.retry_count = runtime_it->second.retry_count;
+  event.transition_ts = CurrentTimeMs();
   if (!requeue) {
-    runtime_it->second.state = MessageState::kDead;
-    runtime_it->second.last_transition_reason = "consumer-nack-dead-lettered";
-    group->inflight.erase(it);
+    event.state = MessageState::kDead;
+    event.reason = TransitionReason::kConsumerNackDead;
   } else {
-    runtime_it->second.retry_count += 1;
-    if (runtime_it->second.retry_count > options_.max_retry_count) {
-      runtime_it->second.state = MessageState::kDead;
-      runtime_it->second.last_transition_reason = "retry-limit-exceeded";
+    event.retry_count += 1;
+    if (event.retry_count > options_.max_retry_count) {
+      event.state = MessageState::kDead;
+      event.reason = TransitionReason::kConsumerNackDead;
     } else {
-      runtime_it->second.state = MessageState::kReady;
-      runtime_it->second.available_after_ms = NowMs() + options_.retry_backoff.count();
-      runtime_it->second.last_transition_reason = "consumer-nack-requeued";
+      event.state = MessageState::kReady;
+      event.available_after_ms = CurrentTimeMs() + options_.retry_backoff.count();
+      event.reason = TransitionReason::kConsumerNackRequeued;
     }
-    group->inflight.erase(it);
+  }
+
+  auto append = AppendTransition(queue_name, group_id, *group, event);
+  if (!append.ok()) {
+    return append;
   }
 
   BuildReadyQueue(*group);
@@ -548,10 +857,10 @@ util::StatusOr<QueueStats> QueueEngine::GetStatsOnShard(const std::string& queue
   }
   auto* group = group_or.value();
 
-  ReapExpiredInflight(*group);
+  ReapExpiredInflight(queue_name, group_id, *group);
 
   QueueStats stats;
-  uint64_t now = NowMs();
+  uint64_t now = CurrentTimeMs();
   uint64_t oldest_ts = 0;
   for (const auto& [_, runtime] : group->runtime) {
     switch (runtime.state) {
@@ -599,9 +908,77 @@ util::StatusOr<MessageDebugView> QueueEngine::InspectMessageOnShard(const std::s
 
   MessageDebugView view;
   view.state = it->second.state;
+  view.sequence = it->second.sequence;
   view.retry_count = it->second.retry_count;
+  view.enqueue_time_ms = it->second.enqueue_ts;
+  view.last_transition_time_ms = it->second.last_transition_ts;
+  view.next_visible_at_ms = it->second.available_after_ms;
   view.last_transition_reason = it->second.last_transition_reason;
+  auto inflight_it = group->inflight.find(id);
+  if (inflight_it != group->inflight.end()) {
+    view.lease_owner = inflight_it->second.owner;
+    view.lease_token = inflight_it->second.lease_token;
+    view.next_visible_at_ms = inflight_it->second.deadline_ms;
+  }
   return view;
 }
+
+util::StatusOr<ReplayResult> QueueEngine::ReplayToSequenceOnShard(const std::string& queue_name,
+                                                                   const std::string& group_id,
+                                                                   uint64_t until_sequence) {
+  auto queue_or = GetQueue(queue_name);
+  if (!queue_or.ok()) {
+    return queue_or.status();
+  }
+
+  ConsumerGroupState replay(storage::CheckpointStore(std::filesystem::path("/tmp/not-used"), options_.fsync_policy));
+  InitScheduler(replay);
+
+  auto offsets = queue_or.value()->segment.Offsets();
+  for (uint64_t offset : offsets) {
+    auto record_or = queue_or.value()->segment.Read(offset);
+    if (!record_or.ok()) {
+      return record_or.status();
+    }
+    model::MessageId id{record_or.value().header.msg_id_high, record_or.value().header.msg_id_low};
+    MessageRuntime runtime;
+    runtime.state = MessageState::kReady;
+    runtime.offset = offset;
+    runtime.enqueue_ts = record_or.value().header.enqueue_ts;
+    runtime.last_transition_ts = runtime.enqueue_ts;
+    runtime.last_transition_reason = "replay-default-ready";
+    replay.runtime[id] = runtime;
+  }
+
+  auto events_or = LoadTransitions(queue_name, group_id, until_sequence);
+  if (!events_or.ok()) {
+    return events_or.status();
+  }
+  for (const auto& event : events_or.value()) {
+    ApplyTransition(replay, event);
+  }
+  BuildReadyQueue(replay);
+
+  ReplayResult result;
+  result.applied_sequence = events_or.value().empty() ? 0 : events_or.value().back().sequence;
+  for (const auto& [_, runtime] : replay.runtime) {
+    switch (runtime.state) {
+      case MessageState::kReady:
+        result.stats.ready_count += 1;
+        break;
+      case MessageState::kInFlight:
+        result.stats.inflight_count += 1;
+        break;
+      case MessageState::kAcked:
+        result.stats.acked_count += 1;
+        break;
+      case MessageState::kDead:
+        result.stats.dead_count += 1;
+        break;
+    }
+  }
+  return result;
+}
+
 
 }  // namespace pomai::queue::engine

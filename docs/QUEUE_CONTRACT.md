@@ -59,3 +59,23 @@ For each message ID, engine exposes:
 - Current state
 - Retry count
 - Last transition reason
+
+
+## Deterministic replayability contract
+- Every state transition is represented as an append-only transition event with a monotonic `sequence`.
+- Engine replay from persisted records reconstructs state deterministically for point-in-time debugging.
+- Time source is injectable for deterministic tests.
+
+## Explain API schema
+`InspectMessage` includes:
+- `state`
+- `sequence`
+- `enqueue_time_ms`
+- `last_transition_time_ms`
+- `retry_count`
+- `next_visible_at_ms`
+- `last_transition_reason`
+- `lease_owner`, `lease_token` when `IN_FLIGHT`
+
+## Crash testing guarantee
+Crash harness continuously validates recovery invariants under restart boundaries.

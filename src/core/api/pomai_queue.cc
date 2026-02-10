@@ -46,4 +46,10 @@ util::StatusOr<engine::MessageDebugView> PomaiQueue::InspectMessage(const std::s
   return engine_.InspectMessage(queue_name, group_id, id);
 }
 
+util::StatusOr<ReplayResult> PomaiQueue::ReplayToSequence(const std::string& queue_name,
+                                                     const std::string& group_id,
+                                                     uint64_t until_sequence) {
+  return engine_.ReplayToSequence(queue_name, group_id, until_sequence);
+}
+
 }  // namespace pomai::queue::api
