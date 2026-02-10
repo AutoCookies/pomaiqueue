@@ -1,5 +1,7 @@
 #include "src/core/util/fsync.h"
 
+#include "src/core/util/failpoint.h"
+
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -8,6 +10,9 @@
 namespace pomai::queue::util {
 
 Status FsyncFile(int fd) {
+  if (FailpointActive("fsync_file")) {
+    return Status(StatusCode::kIOError, "failpoint fsync_file");
+  }
   if (fd < 0) {
     return Status(StatusCode::kInvalidArgument, "invalid fd");
   }
@@ -18,6 +23,9 @@ Status FsyncFile(int fd) {
 }
 
 Status FsyncDir(const std::string& path) {
+  if (FailpointActive("fsync_dir")) {
+    return Status(StatusCode::kIOError, "failpoint fsync_dir");
+  }
   int fd = ::open(path.c_str(), O_RDONLY | O_DIRECTORY);
   if (fd < 0) {
     return Status(StatusCode::kIOError, "open dir failed");

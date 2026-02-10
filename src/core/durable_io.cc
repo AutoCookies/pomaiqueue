@@ -3,9 +3,35 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include <fstream>
 #include <system_error>
 
 namespace pomai::queue::core {
+
+util::Status DurableWriteFile(const std::filesystem::path& final_path,
+                              TmpFileWriter writer,
+                              util::FsyncPolicy fsync_policy) {
+  std::filesystem::create_directories(final_path.parent_path());
+  auto tmp_path = final_path;
+  tmp_path += ".tmp";
+
+  {
+    std::ofstream out(tmp_path, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) {
+      return util::Status(util::StatusCode::kIOError, "open durable tmp failed");
+    }
+    util::Status write_status = writer(out);
+    if (!write_status.ok()) {
+      return write_status;
+    }
+    out.flush();
+    if (!out) {
+      return util::Status(util::StatusCode::kIOError, "flush durable tmp failed");
+    }
+  }
+
+  return DurableRename(tmp_path, final_path, fsync_policy);
+}
 
 util::Status DurableRename(const std::filesystem::path& tmp_path,
                            const std::filesystem::path& final_path,
