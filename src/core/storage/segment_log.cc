@@ -21,6 +21,33 @@ SegmentLog::~SegmentLog() {
   }
 }
 
+SegmentLog::SegmentLog(SegmentLog&& other) noexcept
+    : path_(std::move(other.path_)),
+      fsync_policy_(other.fsync_policy_),
+      fd_(other.fd_),
+      next_offset_(other.next_offset_),
+      offset_to_position_(std::move(other.offset_to_position_)) {
+  other.fd_ = -1;
+  other.next_offset_ = 0;
+}
+
+SegmentLog& SegmentLog::operator=(SegmentLog&& other) noexcept {
+  if (this == &other) {
+    return *this;
+  }
+  if (fd_ >= 0) {
+    ::close(fd_);
+  }
+  path_ = std::move(other.path_);
+  fsync_policy_ = other.fsync_policy_;
+  fd_ = other.fd_;
+  next_offset_ = other.next_offset_;
+  offset_to_position_ = std::move(other.offset_to_position_);
+  other.fd_ = -1;
+  other.next_offset_ = 0;
+  return *this;
+}
+
 util::Status SegmentLog::Open() {
   std::filesystem::create_directories(path_.parent_path());
   fd_ = ::open(path_.c_str(), O_CREAT | O_RDWR, 0644);
@@ -146,6 +173,23 @@ util::StatusOr<Record> SegmentLog::Read(uint64_t offset) const {
     return buffer_or.status();
   }
   return DecodeRecord(buffer_or.value());
+}
+
+std::vector<uint64_t> SegmentLog::Offsets() const {
+  std::vector<uint64_t> offsets;
+  offsets.reserve(offset_to_position_.size());
+  for (const auto& [offset, _] : offset_to_position_) {
+    offsets.push_back(offset);
+  }
+  return offsets;
+}
+
+uint64_t SegmentLog::SizeBytes() const {
+  struct stat st {};
+  if (::fstat(fd_, &st) != 0) {
+    return 0;
+  }
+  return static_cast<uint64_t>(st.st_size);
 }
 
 util::StatusOr<std::vector<std::byte>> SegmentLog::ReadAt(uint64_t position, size_t size) const {

@@ -18,12 +18,18 @@ class SegmentLog {
  public:
   SegmentLog(std::filesystem::path path, util::FsyncPolicy fsync_policy);
   ~SegmentLog();
+  SegmentLog(const SegmentLog&) = delete;
+  SegmentLog& operator=(const SegmentLog&) = delete;
+  SegmentLog(SegmentLog&& other) noexcept;
+  SegmentLog& operator=(SegmentLog&& other) noexcept;
 
   util::Status Open();
   util::Status Recover();
 
   util::StatusOr<uint64_t> Append(const Record& record);
   util::StatusOr<Record> Read(uint64_t offset) const;
+  std::vector<uint64_t> Offsets() const;
+  uint64_t SizeBytes() const;
 
   uint64_t next_offset() const { return next_offset_; }
   const std::filesystem::path& path() const { return path_; }

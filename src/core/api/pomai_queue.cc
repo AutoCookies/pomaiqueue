@@ -36,4 +36,14 @@ util::Status PomaiQueue::Nack(const std::string& queue_name,
   return engine_.Nack(queue_name, group_id, id, requeue);
 }
 
+util::StatusOr<engine::QueueStats> PomaiQueue::GetStats(const std::string& queue_name, const std::string& group_id) {
+  return engine_.GetStats(queue_name, group_id);
+}
+
+util::StatusOr<engine::MessageDebugView> PomaiQueue::InspectMessage(const std::string& queue_name,
+                                                                    const std::string& group_id,
+                                                                    const model::MessageId& id) {
+  return engine_.InspectMessage(queue_name, group_id, id);
+}
+
 }  // namespace pomai::queue::api

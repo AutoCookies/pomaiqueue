@@ -28,6 +28,10 @@ class PomaiQueue {
                     const std::string& group_id,
                     const model::MessageId& id,
                     bool requeue);
+  util::StatusOr<engine::QueueStats> GetStats(const std::string& queue_name, const std::string& group_id);
+  util::StatusOr<engine::MessageDebugView> InspectMessage(const std::string& queue_name,
+                                                          const std::string& group_id,
+                                                          const model::MessageId& id);
 
  private:
   engine::QueueEngine engine_;
