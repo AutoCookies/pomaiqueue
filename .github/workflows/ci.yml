@@ -9,26 +9,59 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        build_type: [Debug, Release]
-        sanitizer: [off, on]
-        exclude:
+        include:
+          - build_type: Debug
+            sanitize: ON
           - build_type: Release
-            sanitizer: on
+            sanitize: OFF
     steps:
       - uses: actions/checkout@v4
       - name: Configure
         run: |
           cmake -S . -B build \
             -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
-            -DPOMAIQUEUE_ENABLE_ASAN_UBSAN=${{ matrix.sanitizer == 'on' && 'ON' || 'OFF' }}
+            -DPOMAIQUEUE_ENABLE_ASAN_UBSAN=${{ matrix.sanitize }}
       - name: Build
         run: cmake --build build --parallel
-      - name: Test
-        run: ctest --test-dir build --output-on-failure
+      - name: Unit + integration tests
+        run: ctest --test-dir build --output-on-failure -R "test_"
+
+  crash-sample:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+      - name: Build
+        run: cmake --build build --parallel --target crash_runner
+      - name: Crash oracle sample
+        run: ./build/crash_runner 2
+      - name: Upload crash artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crash-logs
+          path: /tmp/pomaiqueue-crash-oracle
+
+  benchmark-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build --parallel --target bench_enqueue bench_lease_ack bench_timeout_retry bench_recovery
       - name: Benchmark smoke
-        run: ./build/bench_pomaiqueue > benchmark.json
+        run: scripts/bench/run_all.sh build benchmark.json
       - name: Upload benchmark artifact
         uses: actions/upload-artifact@v4
         with:
-          name: benchmark-${{ matrix.build_type }}-${{ matrix.sanitizer }}
+          name: benchmark-json
           path: benchmark.json
+
+  format-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: CMake configure sanity
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug

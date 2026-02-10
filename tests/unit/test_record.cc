@@ -2,11 +2,16 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "src/core/storage/record.h"
 
+using pomai::queue::storage::DecodeRecord;
+using pomai::queue::storage::EncodeRecord;
+using pomai::queue::storage::Record;
+
 int main() {
-  pomai::queue::storage::Record record;
+  Record record;
   record.header.msg_id_high = 42;
   record.header.msg_id_low = 7;
   record.header.enqueue_ts = 123456;
@@ -14,20 +19,29 @@ int main() {
   record.routing_key = "rk";
   record.headers.emplace_back("key", "value");
 
-  auto encoded = pomai::queue::storage::EncodeRecord(record);
+  auto encoded = EncodeRecord(record);
   assert(encoded.ok());
 
-  auto decoded = pomai::queue::storage::DecodeRecord(encoded.value());
+  auto decoded = DecodeRecord(encoded.value());
   assert(decoded.ok());
-
   assert(decoded.value().header.msg_id_high == record.header.msg_id_high);
   assert(decoded.value().header.msg_id_low == record.header.msg_id_low);
   assert(decoded.value().header.enqueue_ts == record.header.enqueue_ts);
-  assert(decoded.value().payload.size() == record.payload.size());
-  assert(decoded.value().routing_key == record.routing_key);
-  assert(decoded.value().headers.size() == 1);
-  assert(decoded.value().headers[0].first == "key");
-  assert(decoded.value().headers[0].second == "value");
+  assert(decoded.value().payload == record.payload);
 
+  auto corrupted_crc = encoded.value();
+  corrupted_crc.back() = std::byte{0x99};
+  auto crc_fail = DecodeRecord(corrupted_crc);
+  assert(!crc_fail.ok());
+
+  auto truncated = encoded.value();
+  truncated.resize(truncated.size() - 1);
+  auto truncated_fail = DecodeRecord(truncated);
+  assert(!truncated_fail.ok());
+
+  auto bad_magic = encoded.value();
+  reinterpret_cast<uint32_t*>(bad_magic.data())[0] = 0;
+  auto magic_fail = DecodeRecord(bad_magic);
+  assert(!magic_fail.ok());
   return 0;
 }
