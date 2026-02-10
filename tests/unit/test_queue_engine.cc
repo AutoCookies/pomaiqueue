@@ -1,8 +1,8 @@
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
-#include <thread>
 
 #include "src/core/api/pomai_queue.h"
 
@@ -20,15 +20,18 @@ model::Message BuildMessage(uint64_t low, uint64_t ts) {
   return message;
 }
 
-void TestRetryAndDlq() {
+void TestRetryAndDlqWithFakeClock() {
   auto base = std::filesystem::temp_directory_path() / "pomaiqueue-test-retry";
   std::filesystem::remove_all(base);
 
+  std::atomic<uint64_t> fake_now{100};
   api::EngineOptions options;
   options.data_dir = base.string();
   options.max_retry_count = 1;
-  options.retry_backoff = std::chrono::milliseconds(0);
+  options.retry_backoff = std::chrono::milliseconds(1);
   options.visibility_timeout = std::chrono::milliseconds(1);
+  options.scheduler_tick = std::chrono::milliseconds(1);
+  options.now_fn = [&fake_now]() { return fake_now.load(); };
 
   api::PomaiQueue queue(options);
   assert(queue.Start().ok());
@@ -39,13 +42,20 @@ void TestRetryAndDlq() {
   assert(first.ok());
   assert(first.value().has_value());
 
-  std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  fake_now.store(106);
+  bool saw_redelivery = false;
+  for (int i = 0; i < 3; ++i) {
+    auto second = queue.Consume("q", "g");
+    assert(second.ok());
+    if (second.value().has_value()) {
+      saw_redelivery = true;
+      break;
+    }
+    fake_now.fetch_add(1);
+  }
+  assert(saw_redelivery);
 
-  auto second = queue.Consume("q", "g");
-  assert(second.ok());
-  assert(second.value().has_value());
-
-  std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  fake_now.store(120);
   auto third = queue.Consume("q", "g");
   assert(third.ok());
   assert(!third.value().has_value());
@@ -57,6 +67,7 @@ void TestRetryAndDlq() {
   auto inspect = queue.InspectMessage("q", "g", BuildMessage(10, 100).id);
   assert(inspect.ok());
   assert(inspect.value().retry_count >= 2);
+  assert(inspect.value().sequence > 0);
   assert(queue.Stop().ok());
 }
 
@@ -64,8 +75,10 @@ void TestCrashRecoveryInflightToReady() {
   auto base = std::filesystem::temp_directory_path() / "pomaiqueue-test-crash";
   std::filesystem::remove_all(base);
 
+  std::atomic<uint64_t> fake_now{1000};
   api::EngineOptions options;
   options.data_dir = base.string();
+  options.now_fn = [&fake_now]() { return fake_now.load(); };
 
   {
     api::PomaiQueue queue(options);
@@ -75,7 +88,6 @@ void TestCrashRecoveryInflightToReady() {
     auto first = queue.Consume("q", "g");
     assert(first.ok());
     assert(first.value().has_value());
-    // no ack: simulate crash
     assert(queue.Stop().ok());
   }
 
@@ -95,10 +107,39 @@ void TestCrashRecoveryInflightToReady() {
   }
 }
 
+void TestReplayToSequence() {
+  auto base = std::filesystem::temp_directory_path() / "pomaiqueue-test-replay";
+  std::filesystem::remove_all(base);
+
+  std::atomic<uint64_t> fake_now{200};
+  api::EngineOptions options;
+  options.data_dir = base.string();
+  options.now_fn = [&fake_now]() { return fake_now.load(); };
+  options.visibility_timeout = std::chrono::milliseconds(5);
+
+  api::PomaiQueue queue(options);
+  assert(queue.Start().ok());
+  assert(queue.CreateQueue("q").ok());
+  assert(queue.Produce("q", BuildMessage(30, 200)).ok());
+  auto c = queue.Consume("q", "g");
+  assert(c.ok() && c.value().has_value());
+  assert(queue.Ack("q", "g", c.value()->message.id).ok());
+
+  auto replay_mid = queue.ReplayToSequence("q", "g", 1);
+  assert(replay_mid.ok());
+  assert(replay_mid.value().stats.inflight_count == 1);
+
+  auto replay_end = queue.ReplayToSequence("q", "g", 2);
+  assert(replay_end.ok());
+  assert(replay_end.value().stats.acked_count == 1);
+  assert(queue.Stop().ok());
+}
+
 }  // namespace
 
 int main() {
-  TestRetryAndDlq();
+  TestRetryAndDlqWithFakeClock();
   TestCrashRecoveryInflightToReady();
+  TestReplayToSequence();
   return 0;
 }

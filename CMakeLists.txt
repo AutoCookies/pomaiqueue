@@ -8,6 +8,12 @@ option(POMAIQUEUE_BUILD_SERVER "Build pomaiqueued gRPC server" OFF)
 option(POMAIQUEUE_BUILD_CLI "Build pomaiqctl" ON)
 option(POMAIQUEUE_BUILD_TESTS "Build unit tests" ON)
 option(POMAIQUEUE_BUILD_BENCH "Build benchmarks" ON)
+option(POMAIQUEUE_ENABLE_ASAN_UBSAN "Enable sanitizers" OFF)
+
+if (POMAIQUEUE_ENABLE_ASAN_UBSAN)
+  add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
+  add_link_options(-fsanitize=address,undefined)
+endif()
 
 add_library(pomaiqueue_core
   src/core/api/pomai_queue.cc
@@ -25,6 +31,7 @@ target_include_directories(pomaiqueue_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 if (POMAIQUEUE_BUILD_CLI)
   add_executable(pomaiqctl src/cli/pomaiqctl.cc)
+  target_link_libraries(pomaiqctl PRIVATE pomaiqueue_core)
 endif()
 
 if (POMAIQUEUE_BUILD_SERVER)
@@ -36,11 +43,17 @@ if (POMAIQUEUE_BUILD_TESTS)
   add_executable(test_record tests/unit/test_record.cc)
   target_link_libraries(test_record PRIVATE pomaiqueue_core)
   add_test(NAME test_record COMMAND test_record)
+
   add_executable(test_queue_engine tests/unit/test_queue_engine.cc)
   target_link_libraries(test_queue_engine PRIVATE pomaiqueue_core)
   add_test(NAME test_queue_engine COMMAND test_queue_engine)
+
+  add_executable(crash_runner tests/crash/runner.cc)
+  target_link_libraries(crash_runner PRIVATE pomaiqueue_core)
+  add_test(NAME crash_runner COMMAND crash_runner)
 endif()
 
 if (POMAIQUEUE_BUILD_BENCH)
   add_executable(bench_pomaiqueue benchmarks/bench_pomaiqueue.cc)
+  target_link_libraries(bench_pomaiqueue PRIVATE pomaiqueue_core)
 endif()
