@@ -5,6 +5,10 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(POMAIQUEUE_BUILD_SERVER "Build pomaiqueued gRPC server" OFF)
+option(POMAIQ_BUILD_SERVER "Compatibility alias for server build" OFF)
+if (POMAIQ_BUILD_SERVER)
+  set(POMAIQUEUE_BUILD_SERVER ON)
+endif()
 option(POMAIQUEUE_BUILD_CLI "Build pomaiqctl" ON)
 option(POMAIQUEUE_BUILD_TESTS "Build unit tests" ON)
 option(POMAIQUEUE_BUILD_BENCH "Build benchmarks" ON)
@@ -17,6 +21,8 @@ endif()
 
 add_library(pomaiqueue_core
   src/core/api/pomai_queue.cc
+  src/core/consumer_session.cc
+  src/core/durable_io.cc
   src/core/engine/queue_engine.cc
   src/core/engine/shard_actor.cc
   src/core/model/message.h
@@ -38,6 +44,13 @@ if (POMAIQUEUE_BUILD_CLI)
 endif()
 
 if (POMAIQUEUE_BUILD_SERVER)
+  add_executable(pomaiqueue-server
+    cmd/pomaiqueue-server/main.cc
+    src/server/config.cc
+  )
+  target_link_libraries(pomaiqueue-server PRIVATE pomaiqueue_core)
+
+  # Legacy target name retained for compatibility.
   add_executable(pomaiqueue_server
     src/server/main.cc
     src/server/config.cc
@@ -62,6 +75,14 @@ if (POMAIQUEUE_BUILD_TESTS)
   add_executable(test_queue_engine tests/unit/test_queue_engine.cc)
   target_link_libraries(test_queue_engine PRIVATE pomaiqueue_core)
   add_test(NAME test_queue_engine COMMAND test_queue_engine)
+
+  add_executable(test_consumer_session tests/unit/test_consumer_session.cc)
+  target_link_libraries(test_consumer_session PRIVATE pomaiqueue_core)
+  add_test(NAME test_consumer_session COMMAND test_consumer_session)
+
+  add_executable(test_durable_io tests/unit/test_durable_io.cc)
+  target_link_libraries(test_durable_io PRIVATE pomaiqueue_core)
+  add_test(NAME test_durable_io COMMAND test_durable_io)
 
   add_executable(test_server_config
     tests/unit/test_server_config.cc

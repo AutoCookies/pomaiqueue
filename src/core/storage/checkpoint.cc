@@ -5,6 +5,7 @@
 
 #include <fstream>
 
+#include "src/core/durable_io.h"
 #include "src/core/util/crc64.h"
 
 namespace pomai::queue::storage {
@@ -72,26 +73,7 @@ util::Status CheckpointStore::Save(uint64_t offset) {
     out.flush();
   }
 
-  if (fsync_policy_ != util::FsyncPolicy::kNever) {
-    int fd = ::open(tmp_path.c_str(), O_RDONLY);
-    if (fd >= 0) {
-      util::Status status = util::FsyncFile(fd);
-      ::close(fd);
-      if (!status.ok()) {
-        return status;
-      }
-    }
-  }
-
-  std::filesystem::rename(tmp_path, path_);
-  if (fsync_policy_ != util::FsyncPolicy::kNever) {
-    util::Status status = util::FsyncDir(path_.parent_path().string());
-    if (!status.ok()) {
-      return status;
-    }
-  }
-
-  return util::Status::Ok();
+  return core::DurableRename(tmp_path, path_, fsync_policy_);
 }
 
 }  // namespace pomai::queue::storage
