@@ -54,26 +54,19 @@ util::StatusOr<uint64_t> CheckpointStore::Load() {
 }
 
 util::Status CheckpointStore::Save(uint64_t offset) {
-  std::filesystem::create_directories(path_.parent_path());
-  auto tmp_path = path_;
-  tmp_path += ".tmp";
-
-  {
-    std::ofstream out(tmp_path, std::ios::binary | std::ios::trunc);
-    if (!out.is_open()) {
-      return util::Status(util::StatusCode::kIOError, "open checkpoint tmp failed");
-    }
-    CheckpointBlob blob;
-    blob.offset = offset;
-    blob.crc64 = ComputeCrc(blob);
-    out.write(reinterpret_cast<const char*>(&blob), sizeof(blob));
-    if (!out) {
-      return util::Status(util::StatusCode::kIOError, "write checkpoint failed");
-    }
-    out.flush();
-  }
-
-  return core::DurableRename(tmp_path, path_, fsync_policy_);
+  return core::DurableWriteFile(
+      path_,
+      [&](std::ofstream& out) {
+        CheckpointBlob blob;
+        blob.offset = offset;
+        blob.crc64 = ComputeCrc(blob);
+        out.write(reinterpret_cast<const char*>(&blob), sizeof(blob));
+        if (!out) {
+          return util::Status(util::StatusCode::kIOError, "write checkpoint failed");
+        }
+        return util::Status::Ok();
+      },
+      fsync_policy_);
 }
 
 }  // namespace pomai::queue::storage

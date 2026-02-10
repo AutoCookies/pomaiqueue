@@ -458,52 +458,45 @@ util::Status QueueEngine::PersistGroupState(const std::string& queue_name,
                                             const std::string& group_id,
                                             const ConsumerGroupState& group) {
   auto path = GroupStatePath(options_.data_dir, queue_name, group_id);
-  std::filesystem::create_directories(path.parent_path());
-  auto tmp = path;
-  tmp += ".tmp";
-
-  {
-    std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-    if (!out.is_open()) {
-      return util::Status(util::StatusCode::kIOError, "open group state tmp failed");
-    }
-
-    uint64_t count = group.runtime.size();
-    out.write(reinterpret_cast<const char*>(&count), sizeof(count));
-    out.write(reinterpret_cast<const char*>(&group.next_sequence), sizeof(group.next_sequence));
-    for (const auto& [id, runtime] : group.runtime) {
-      uint64_t reason_size = runtime.last_transition_reason.size();
-      uint64_t id_high = id.high;
-      uint64_t id_low = id.low;
-      uint64_t offset = runtime.offset;
-      uint32_t state = EncodeState(runtime.state);
-      uint32_t retry = runtime.retry_count;
-      uint64_t enqueue_ts = runtime.enqueue_ts;
-      uint64_t last_transition_ts = runtime.last_transition_ts;
-      uint64_t available_after = runtime.available_after_ms;
-      uint64_t sequence = runtime.sequence;
-      out.write(reinterpret_cast<const char*>(&id_high), sizeof(id_high));
-      out.write(reinterpret_cast<const char*>(&id_low), sizeof(id_low));
-      out.write(reinterpret_cast<const char*>(&offset), sizeof(offset));
-      out.write(reinterpret_cast<const char*>(&state), sizeof(state));
-      out.write(reinterpret_cast<const char*>(&retry), sizeof(retry));
-      out.write(reinterpret_cast<const char*>(&enqueue_ts), sizeof(enqueue_ts));
-      out.write(reinterpret_cast<const char*>(&last_transition_ts), sizeof(last_transition_ts));
-      out.write(reinterpret_cast<const char*>(&available_after), sizeof(available_after));
-      out.write(reinterpret_cast<const char*>(&sequence), sizeof(sequence));
-      out.write(reinterpret_cast<const char*>(&reason_size), sizeof(reason_size));
-      out.write(runtime.last_transition_reason.data(), static_cast<std::streamsize>(reason_size));
-    }
-    out.flush();
-    if (!out) {
-      return util::Status(util::StatusCode::kIOError, "write group state failed");
-    }
-  }
-
   if (util::FailpointActive("before_checkpoint_rename")) {
     return util::Status(util::StatusCode::kIOError, "failpoint before_checkpoint_rename");
   }
-  return core::DurableRename(tmp, path, options_.fsync_policy);
+
+  return core::DurableWriteFile(
+      path,
+      [&](std::ofstream& out) {
+        uint64_t count = group.runtime.size();
+        out.write(reinterpret_cast<const char*>(&count), sizeof(count));
+        out.write(reinterpret_cast<const char*>(&group.next_sequence), sizeof(group.next_sequence));
+        for (const auto& [id, runtime] : group.runtime) {
+          uint64_t reason_size = runtime.last_transition_reason.size();
+          uint64_t id_high = id.high;
+          uint64_t id_low = id.low;
+          uint64_t offset = runtime.offset;
+          uint32_t state = EncodeState(runtime.state);
+          uint32_t retry = runtime.retry_count;
+          uint64_t enqueue_ts = runtime.enqueue_ts;
+          uint64_t last_transition_ts = runtime.last_transition_ts;
+          uint64_t available_after = runtime.available_after_ms;
+          uint64_t sequence = runtime.sequence;
+          out.write(reinterpret_cast<const char*>(&id_high), sizeof(id_high));
+          out.write(reinterpret_cast<const char*>(&id_low), sizeof(id_low));
+          out.write(reinterpret_cast<const char*>(&offset), sizeof(offset));
+          out.write(reinterpret_cast<const char*>(&state), sizeof(state));
+          out.write(reinterpret_cast<const char*>(&retry), sizeof(retry));
+          out.write(reinterpret_cast<const char*>(&enqueue_ts), sizeof(enqueue_ts));
+          out.write(reinterpret_cast<const char*>(&last_transition_ts), sizeof(last_transition_ts));
+          out.write(reinterpret_cast<const char*>(&available_after), sizeof(available_after));
+          out.write(reinterpret_cast<const char*>(&sequence), sizeof(sequence));
+          out.write(reinterpret_cast<const char*>(&reason_size), sizeof(reason_size));
+          out.write(runtime.last_transition_reason.data(), static_cast<std::streamsize>(reason_size));
+        }
+        if (!out) {
+          return util::Status(util::StatusCode::kIOError, "write group state failed");
+        }
+        return util::Status::Ok();
+      },
+      options_.fsync_policy);
 }
 
 util::Status QueueEngine::AppendTransition(const std::string& queue_name,
