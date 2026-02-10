@@ -181,6 +181,8 @@ class QueueEngine {
 
   size_t ShardForQueue(const std::string& queue_name) const;
 
+  util::Status ValidateShardConfig() const;
+
   static uint64_t NowMs();
   uint64_t CurrentTimeMs() const;
   static std::filesystem::path GroupStatePath(const std::string& data_dir,

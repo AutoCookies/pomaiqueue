@@ -82,6 +82,9 @@ std::filesystem::path QueueEngine::GroupEventPath(const std::string& data_dir,
 }
 
 util::Status QueueEngine::Start() {
+  if (options_.shard_count == 0) {
+    return util::Status(util::StatusCode::kInvalidArgument, "shard_count must be >= 1");
+  }
   shards_.clear();
   shards_.reserve(options_.shard_count);
   for (uint32_t i = 0; i < options_.shard_count; ++i) {
@@ -100,16 +103,34 @@ util::Status QueueEngine::Stop() {
   return util::Status::Ok();
 }
 
+util::Status QueueEngine::ValidateShardConfig() const {
+  if (options_.shard_count == 0) {
+    return util::Status(util::StatusCode::kInvalidArgument, "shard_count must be >= 1");
+  }
+  if (shards_.empty()) {
+    return util::Status(util::StatusCode::kUnavailable, "engine not started");
+  }
+  return util::Status::Ok();
+}
+
 size_t QueueEngine::ShardForQueue(const std::string& queue_name) const {
   return std::hash<std::string>{}(queue_name) % options_.shard_count;
 }
 
 util::Status QueueEngine::CreateQueue(const std::string& queue_name) {
+  auto valid = ValidateShardConfig();
+  if (!valid.ok()) {
+    return valid;
+  }
   auto shard_id = ShardForQueue(queue_name);
   return shards_[shard_id]->Submit([this, queue_name]() { return CreateQueueOnShard(queue_name); });
 }
 
 util::StatusOr<uint64_t> QueueEngine::Produce(const std::string& queue_name, const model::Message& message) {
+  auto valid = ValidateShardConfig();
+  if (!valid.ok()) {
+    return valid;
+  }
   auto shard_id = ShardForQueue(queue_name);
   return shards_[shard_id]->SubmitValue<uint64_t>(
       [this, queue_name, message]() { return ProduceOnShard(queue_name, message); });
@@ -117,6 +138,10 @@ util::StatusOr<uint64_t> QueueEngine::Produce(const std::string& queue_name, con
 
 util::StatusOr<std::optional<ConsumeResult>> QueueEngine::Consume(const std::string& queue_name,
                                                                   const std::string& group_id) {
+  auto valid = ValidateShardConfig();
+  if (!valid.ok()) {
+    return valid;
+  }
   auto shard_id = ShardForQueue(queue_name);
   return shards_[shard_id]->SubmitValue<std::optional<ConsumeResult>>(
       [this, queue_name, group_id]() { return ConsumeOnShard(queue_name, group_id); });
@@ -125,6 +150,10 @@ util::StatusOr<std::optional<ConsumeResult>> QueueEngine::Consume(const std::str
 util::Status QueueEngine::Ack(const std::string& queue_name,
                               const std::string& group_id,
                               const model::MessageId& id) {
+  auto valid = ValidateShardConfig();
+  if (!valid.ok()) {
+    return valid;
+  }
   auto shard_id = ShardForQueue(queue_name);
   return shards_[shard_id]->Submit([this, queue_name, group_id, id]() { return AckOnShard(queue_name, group_id, id); });
 }
@@ -133,12 +162,20 @@ util::Status QueueEngine::Nack(const std::string& queue_name,
                                const std::string& group_id,
                                const model::MessageId& id,
                                bool requeue) {
+  auto valid = ValidateShardConfig();
+  if (!valid.ok()) {
+    return valid;
+  }
   auto shard_id = ShardForQueue(queue_name);
   return shards_[shard_id]->Submit(
       [this, queue_name, group_id, id, requeue]() { return NackOnShard(queue_name, group_id, id, requeue); });
 }
 
 util::StatusOr<QueueStats> QueueEngine::GetStats(const std::string& queue_name, const std::string& group_id) {
+  auto valid = ValidateShardConfig();
+  if (!valid.ok()) {
+    return valid;
+  }
   auto shard_id = ShardForQueue(queue_name);
   return shards_[shard_id]->SubmitValue<QueueStats>(
       [this, queue_name, group_id]() { return GetStatsOnShard(queue_name, group_id); });
@@ -147,6 +184,10 @@ util::StatusOr<QueueStats> QueueEngine::GetStats(const std::string& queue_name, 
 util::StatusOr<MessageDebugView> QueueEngine::InspectMessage(const std::string& queue_name,
                                                              const std::string& group_id,
                                                              const model::MessageId& id) {
+  auto valid = ValidateShardConfig();
+  if (!valid.ok()) {
+    return valid;
+  }
   auto shard_id = ShardForQueue(queue_name);
   return shards_[shard_id]->SubmitValue<MessageDebugView>(
       [this, queue_name, group_id, id]() { return InspectMessageOnShard(queue_name, group_id, id); });
@@ -155,6 +196,10 @@ util::StatusOr<MessageDebugView> QueueEngine::InspectMessage(const std::string& 
 util::StatusOr<ReplayResult> QueueEngine::ReplayToSequence(const std::string& queue_name,
                                                            const std::string& group_id,
                                                            uint64_t until_sequence) {
+  auto valid = ValidateShardConfig();
+  if (!valid.ok()) {
+    return valid;
+  }
   auto shard_id = ShardForQueue(queue_name);
   return shards_[shard_id]->SubmitValue<ReplayResult>(
       [this, queue_name, group_id, until_sequence]() {

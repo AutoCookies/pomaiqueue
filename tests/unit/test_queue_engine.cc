@@ -107,6 +107,24 @@ void TestCrashRecoveryInflightToReady() {
   }
 }
 
+
+void TestInvalidShardConfigDoesNotCrash() {
+  auto base = std::filesystem::temp_directory_path() / "pomaiqueue-test-invalid-shards";
+  std::filesystem::remove_all(base);
+
+  api::EngineOptions options;
+  options.data_dir = base.string();
+  options.shard_count = 0;
+
+  api::PomaiQueue queue(options);
+  auto start = queue.Start();
+  assert(!start.ok());
+  assert(start.code() == util::StatusCode::kInvalidArgument);
+
+  auto consume = queue.Consume("q", "g");
+  assert(!consume.ok());
+}
+
 void TestReplayToSequence() {
   auto base = std::filesystem::temp_directory_path() / "pomaiqueue-test-replay";
   std::filesystem::remove_all(base);
@@ -141,5 +159,6 @@ int main() {
   TestRetryAndDlqWithFakeClock();
   TestCrashRecoveryInflightToReady();
   TestReplayToSequence();
+  TestInvalidShardConfigDoesNotCrash();
   return 0;
 }
