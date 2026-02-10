@@ -1,6 +1,6 @@
 # PomaiQueue
 
-![CI](https://github.com/example/pomaiqueue/actions/workflows/ci.yml/badge.svg)
+![Pomai Logo](/assets/logo.png)
 
 Pomai Queue is a deterministic, bounded, crash-safe backend task queue with replay debugging.
 
