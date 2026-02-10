@@ -14,6 +14,30 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
+## Server daemon (deterministic runtime wrapper)
+```bash
+cmake -S . -B build -DPOMAIQUEUE_BUILD_SERVER=ON
+cmake --build build --target pomaiqueue_server
+./build/pomaiqueue_server --config ./server.cfg
+```
+
+Example `server.cfg`:
+```ini
+data_dir=/tmp/pomaiqueue
+shard_count=1
+max_inflight=100
+max_queue_depth=10000
+max_retry_count=5
+max_segment_size_bytes=67108864
+visibility_timeout=30s
+retry_backoff=1s
+scheduler_tick=100ms
+retention=24h
+fsync_policy=always
+bootstrap_queues=jobs,dead_jobs
+shutdown_grace=5s
+```
+
 ## How we prove safety
 - Contract + invariants: [`docs/QUEUE_CONTRACT.md`](docs/QUEUE_CONTRACT.md), [`docs/INVARIANTS.md`](docs/INVARIANTS.md)
 - Deterministic test pyramid: [`docs/TESTING.md`](docs/TESTING.md)

@@ -38,7 +38,11 @@ if (POMAIQUEUE_BUILD_CLI)
 endif()
 
 if (POMAIQUEUE_BUILD_SERVER)
-  add_executable(pomaiqueued src/server/main.cc)
+  add_executable(pomaiqueue_server
+    src/server/main.cc
+    src/server/config.cc
+  )
+  target_link_libraries(pomaiqueue_server PRIVATE pomaiqueue_core)
 endif()
 
 if (POMAIQUEUE_BUILD_TESTS)
@@ -58,6 +62,13 @@ if (POMAIQUEUE_BUILD_TESTS)
   add_executable(test_queue_engine tests/unit/test_queue_engine.cc)
   target_link_libraries(test_queue_engine PRIVATE pomaiqueue_core)
   add_test(NAME test_queue_engine COMMAND test_queue_engine)
+
+  add_executable(test_server_config
+    tests/unit/test_server_config.cc
+    src/server/config.cc
+  )
+  target_link_libraries(test_server_config PRIVATE pomaiqueue_core)
+  add_test(NAME test_server_config COMMAND test_server_config)
 
   add_executable(test_engine_integration tests/integration/test_engine_integration.cc)
   target_link_libraries(test_engine_integration PRIVATE pomaiqueue_core)
